@@ -92,7 +92,7 @@ namespace DrTvDownloader.Library
                                       .Select(s => s.Split(')').Last())
                                       .Select(s => s.Substring(1))
                                       .Select(s => s.Replace(".mp4", ""))
-                                      .Contains(slug.Slug);
+                                      .Any(a => a.EndsWith(slug.Slug));
 
                 if (exists)
                 {
