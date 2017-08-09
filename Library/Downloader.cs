@@ -7,6 +7,8 @@ using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using DrTvDownloader.Library.Helpers;
 using Newtonsoft.Json;
@@ -86,13 +88,21 @@ namespace DrTvDownloader.Library
             foreach (var slug in slugs)
             {
                 var episodeDir = videoDir + "/" + slug.Title;
+                var tags = Directory.Exists(episodeDir) ? Directory.GetFiles(episodeDir)
+                    .Select(s =>
+                    {
+                        try
+                        {
+                            return TagLib.File.Create(s).Tag.Comment;
+                        }
+                        catch (Exception e)
+                        {
+                            return "";
+                        }
+                    }) : new List<string>();
 
-                var exists = Directory.Exists(episodeDir) && 
-                             Directory.GetFiles(episodeDir)
-                                      .Select(s => s.Split(')').Last())
-                                      .Select(s => s.Substring(1))
-                                      .Select(s => s.Replace(".mp4", ""))
-                                      .Any(a => a.EndsWith(slug.Slug));
+                var exists = Directory.Exists(episodeDir) &&
+                             tags.Any(a => a == slug.Slug);
 
                 if (exists)
                 {
@@ -111,6 +121,8 @@ namespace DrTvDownloader.Library
                     continue;
                 }
 
+                var cardData = programCard.Data.FirstOrDefault();
+
                 if (!Directory.Exists(episodeDir))
                 {
                     Directory.CreateDirectory(episodeDir);
@@ -118,7 +130,45 @@ namespace DrTvDownloader.Library
 
                 _logger.Log($"Downloading {slug.Slug}");
 
-                DownloadVideo(videoFeed, episodeDir);
+                var title = cardData.Title;
+                var episode = cardData.EpisodeNumber;
+                var episodeTag = $"({episode})";
+
+                if (title.Contains(episodeTag))
+                {
+                    title = title.Replace($" {episodeTag}", "");
+                }
+                else
+                {
+                    var titleSplit = title.Split(new[] { '(', ':', ')' });
+
+                    // format: "name (8:10)"
+                    if (titleSplit.Length == 4)
+                    {
+                        int.TryParse(titleSplit[1], out episode);
+                    }
+
+                    if (title.Contains('('))
+                    {
+                        // lets remove everyting after the last begin parantes
+                        title = title.Substring(0, title.LastIndexOf('(') - 1);
+                    }
+
+                    // if we get this far, the title is probably fine :-)
+                }
+
+                string name;
+
+                if (episode == 0)
+                {
+                    name = cardData.Title + ".mp4";
+                }
+                else
+                {
+                    name = $"{title} S{cardData.SeasonNumber.ToString().PadLeft(2, '0')}E{episode.ToString().PadLeft(2, '0')}.mp4";
+                }
+
+                DownloadVideo(videoFeed, episodeDir, name, slug.Slug);
             }
         }
 
@@ -136,7 +186,7 @@ namespace DrTvDownloader.Library
             return result;
         }
 
-        private void DownloadVideo(string url, string dir)
+        private void DownloadVideo(string url, string dir, string newFilename, string slug)
         {
             var startInfo = new ProcessStartInfo
             {
@@ -145,17 +195,63 @@ namespace DrTvDownloader.Library
                 WorkingDirectory = dir,
                 FileName = "youtube-dl.exe",
                 Arguments = $"{url}",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.GetEncoding(1252)
             };
+
+            var filename = "";
 
             try
             {
-                using (var exeProcess = Process.Start(startInfo))
+                using (var process = Process.Start(startInfo))
                 {
-                    // TODO: capture output so we can log it somewhere else
-                    exeProcess?.WaitForExit();
+                    var stderrThread = new Thread(() => { process.StandardError.ReadToEnd(); });
+                    stderrThread.Start();
+
+                    // Read stdout synchronously (on this thread)
+                    while (true)
+                    {
+                        var line = process.StandardOutput.ReadLine();
+                        if (line == null)
+                        {
+                            break;
+                        }
+
+                        _logger.Log(line);
+
+                        // example: [download] Destination: Kasper og Sofie (11)-kasper-og-sofie-11-2.mp4
+                        // other example: [download] Masha og Bj°rnen (1)-masha-og-bjoernen-1.mp4 has already been downloaded
+                        if (line.Contains(".mp4") && line.StartsWith("[download]"))
+                        {
+                            filename = line.Replace("[download] Destination: ", "")
+                                           .Replace("[download] ", "")
+                                           .Replace(" has already been downloaded", "");
+                        }
+                    }
+
+                    process.WaitForExit();
+                    stderrThread.Join();
                 }
+
+                if (filename == "")
+                {
+                    return;
+                }
+
+                _logger.Log($"Found {filename}");
+
+                var fileName = dir + "/" + filename;
+
+                var file = TagLib.File.Create(fileName);
+
+                // add the slug as the comment;
+                file.Tag.Comment = slug;
+                file.Save();
+
+                File.Move(fileName, dir + "/" + newFilename);
             }
-            catch
+            catch(Exception e)
             {
                 _logger.Log($"Could not download: {url}");
             }
