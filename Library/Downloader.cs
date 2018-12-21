@@ -165,7 +165,7 @@ namespace DrTvDownloader.Library
                 }
                 else
                 {
-                    name = $"{title} S{cardData.SeasonNumber.ToString().PadLeft(2, '0')}E{episode.ToString().PadLeft(2, '0')}.mp4";
+                    name = $"{title} S{cardData.SeasonNumber.ToString().PadLeft(2, '0')}E{episode.ToString().PadLeft(2, '0')}";
                 }
 
                 DownloadVideo(videoFeed, episodeDir, name, slug.Slug);
@@ -194,7 +194,7 @@ namespace DrTvDownloader.Library
                 UseShellExecute = false,
                 WorkingDirectory = dir,
                 FileName = "youtube-dl.exe",
-                Arguments = $"{url}",
+                Arguments = $"--all-subs {url}",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 StandardOutputEncoding = Encoding.GetEncoding(1252)
@@ -249,7 +249,16 @@ namespace DrTvDownloader.Library
                 file.Tag.Comment = slug;
                 file.Save();
 
-                File.Move(fileName, dir + "/" + newFilename);
+                // Get Dir info here
+                var dirInfo = new DirectoryInfo(dir);
+                // WHere only match filename without extension.
+                var searchPattern = filename.Replace(".mp4", "");
+                var files = dirInfo.GetFiles(searchPattern + "*");
+                // foreach move them 
+                foreach (var forFile in files)
+                {
+                    File.Move(forFile.FullName, dir + "/" + newFilename + forFile.Extension);
+                }
             }
             catch(Exception e)
             {
